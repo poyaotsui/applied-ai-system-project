@@ -227,11 +227,32 @@ Results match expectations: the exact genre+mood+energy match (Sunrise City) sco
 
 ## Experiments You Tried
 
-Use this section to document the experiments you ran. For example:
+### Weight-Shift Experiment — High-Energy Pop profile
 
-- What happened when you changed the weight on genre from 2.0 to 0.5
-- What happened when you added tempo or valence to the score
-- How did your system behave for different types of users
+Changed: genre weight 2.0 → 1.0 (halved), energy weight 1.0 → 2.0 (doubled).
+
+| Rank | Baseline | Experimental |
+|---|---|---|
+| 1 | Sunrise City (pop/happy) 4.89 | Sunrise City (pop/happy) 4.86 |
+| 2 | **Gym Hero (pop/intense) 3.31** | **Rooftop Lights (indie-pop/happy) 3.73** |
+| 3 | **Rooftop Lights (indie-pop/happy) 2.82** | **Gym Hero (pop/intense) 3.23** |
+| 4 | Concrete Jungle (hip-hop) 1.32 | Concrete Jungle (hip-hop) 2.32 |
+| 5 | Storm Runner (rock) 1.18 | Storm Runner (rock) 2.12 |
+
+**What changed**: Rooftop Lights (indie pop / happy / energy 0.76) jumped from #3 to #2, displacing Gym Hero (pop / intense / energy 0.93). With a smaller genre bonus, Gym Hero's exact-genre advantage shrank, and Rooftop Lights' mood match + energy proximity overtook it. This felt *more* intuitive — a user who wants "happy pop" probably prefers a mood match over a genre match when the genre match brings the wrong mood.
+
+**Conclusion**: the original genre weight of 2.0 makes the system slightly over-commit to genre at the expense of mood, especially for users who define their taste emotionally rather than by genre label.
+
+### Profile Comparison Reflections
+
+**High-Energy Pop vs Chill Lofi**  
+These profiles produce completely non-overlapping top-3 results, which is the expected behavior. The energy gap (0.85 vs 0.38) alone would separate them, but the genre and mood gaps compound the separation — a lofi/chill song has no chance of reaching the top for the pop user, and vice versa. This confirms that when all three features (genre, mood, energy) align, the scoring system cleanly partitions the catalog.
+
+**Deep Intense Rock vs Metal/Angry**  
+Both profiles want high energy and intense emotion, but their top results diverge sharply after rank 1. The rock profile has two rock/intense songs in the catalog (Storm Runner at 4.74, then Gym Hero at 2.87 for its mood match). The metal profile has only one metal song; its ranks 2–5 are all pop/hip-hop songs that happen to be high-energy. This reveals the catalog bias: the system is only as good as the data behind it. Two emotionally similar user types get very different quality recommendations based entirely on how many songs their genre has in the catalog.
+
+**Edge: Peaceful but High-Energy (adversarial)**  
+This profile exposed the biggest flaw. The user said they like ambient music (genre) with a peaceful mood but high energy (0.95). Every peaceful song in the catalog has low energy (the two peaceful songs score 0.20 and 0.48 on energy). The genre match won anyway — Spacewalk Thoughts (ambient/chill, energy 0.28) ranked #1 with a score of 2.66 despite having energy that is 0.67 away from the user's target. The categorical bonus was powerful enough to reward an energetically incompatible song over songs that were much closer in energy. In plain language: the system heard "I like ambient music" so loudly that it stopped listening to "and I want it to feel intense."
 
 ---
 
