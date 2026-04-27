@@ -1,391 +1,370 @@
-# 🎵 Music Recommender Simulation
+# AI Music Curator
 
-## Project Summary
+A conversational music recommendation system that combines **Retrieval-Augmented Generation (RAG)** and an **agentic Claude workflow** to turn natural-language requests into curated playlists grounded in a real song catalog.
 
-In this project you will build and explain a small music recommender system.
-
-Your goal is to:
-
-- Represent songs and a user "taste profile" as data
-- Design a scoring rule that turns that data into recommendations
-- Evaluate what your system gets right and wrong
-- Reflect on how this mirrors real world AI recommenders
-
-This simulation builds a **content-based music recommender** that scores songs purely from their audio attributes and compares them to a user's stated taste profile. There is no dependency on other users' listening history — every recommendation is derived from the song's own features (genre, mood, energy, valence, acousticness) matched against what the user tells us they enjoy.
+> Built as an evolution of *VibeFinder 1.0* (Modules 1–3), this project upgrades a rule-based scoring engine into a full AI pipeline with tool use, structured logging, and a reliability test suite.
 
 ---
 
-## How The System Works
+## Table of Contents
 
-### How real-world systems work
-
-Streaming platforms like Spotify and YouTube Music use two complementary approaches to decide what to play next:
-
-**Collaborative filtering** looks at the collective behavior of millions of users. If users who listened to Song A also consistently played Song B, the system infers Song B is likely a good next recommendation for anyone who liked Song A — even if the two songs share no obvious audio properties. The signal here is *other people's taste*, not the song's own attributes.
-
-**Content-based filtering** ignores other users entirely. It studies the song's own measurable properties — tempo, energy, genre, mood, acousticness — and compares them to the current listener's preference profile. If you like high-energy pop songs, it finds other high-energy pop songs. The signal here is *feature similarity*.
-
-Real platforms combine both (called a hybrid approach), layering in signals like recency, skips, playlist adds, and even the time of day. The main data types involved are:
-- **Behavioral data**: likes, skips, playlist adds, repeat plays, session context
-- **Audio features**: tempo, energy, valence, danceability, mood, genre, acousticness
-
-### What this simulation prioritizes
-
-This version is a pure **content-based** recommender. It uses only song attributes and a declared user profile — no listening history, no other users.
-
-**`Song` object features:**
-| Feature | Type | Role |
-|---|---|---|
-| `genre` | categorical | Broadest filter; worth the most points (2.0) |
-| `mood` | categorical | Emotional tone match (1.5 points) |
-| `energy` | float 0–1 | Proximity score — rewards closeness to user's target |
-| `valence` | float 0–1 | Positivity/happiness of the track (small lift) |
-| `acousticness` | float 0–1 | Bonus if user prefers acoustic feel |
-| `tempo_bpm` | float | Available in data; not yet weighted (future experiment) |
-| `danceability` | float 0–1 | Available in data; not yet weighted (future experiment) |
-
-**`UserProfile` object stores:**
-- `favorite_genre` — the genre the user wants more of
-- `favorite_mood` — the emotional tone they're after
-- `target_energy` — a 0–1 float representing their desired intensity level
-- `likes_acoustic` — boolean flag that enables the acousticness bonus
-
-### The Algorithm Recipe
-
-**Finalized Scoring Rule** (answers: "How good is this ONE song for this user?")
-
-| Signal | Points | Why this weight |
-|---|---|---|
-| Genre exact match | **+2.0** | Genre is the broadest musical family — the single strongest filter |
-| Mood exact match | **+1.5** | Mood captures emotional intent; second most important signal |
-| Energy proximity | **+0.0 to +1.0** | `1 − |song.energy − target_energy|` — rewards closeness, not just high/low |
-| Valence boost | **+0.0 to +0.5** | `song.valence × 0.5` — small lift for positive/upbeat tracks |
-| Acousticness bonus | **+0.0 to +0.5** | `song.acousticness × 0.5`, only applied when `user.likes_acoustic = True` |
-| **Maximum possible** | **5.0** | |
-
-```
-score = 0
-if song.genre == user.favorite_genre  →  +2.0
-if song.mood  == user.favorite_mood   →  +1.5
-energy_proximity = 1 - |song.energy - user.target_energy|
-score += energy_proximity × 1.0      →  up to +1.0
-score += song.valence × 0.5          →  up to +0.5
-if user.likes_acoustic:
-    score += song.acousticness × 0.5 →  up to +0.5
-```
-
-We need **both** a Scoring Rule and a Ranking Rule because they do different jobs:
-- The **Scoring Rule** answers "how relevant is this one song?" — it produces a single number per song.
-- The **Ranking Rule** answers "given all those numbers, which songs bubble to the top?" — it sorts the scored list descending and takes the top _k_.
-
-Without the Scoring Rule you have nothing to sort. Without the Ranking Rule you have a pile of numbers with no output.
-
-### Data Flow Diagram
-
-```mermaid
-flowchart TD
-    A["👤 User Profile\nfavorite_genre · favorite_mood\ntarget_energy · likes_acoustic"]
-    B["📄 songs.csv\n18 songs · 9 genres · 10 moods"]
-
-    A --> C
-    B --> C
-
-    C["🔁 For Each Song in Catalog"]
-
-    C --> D["⚖️ SCORING RULE — Judge this one song"]
-
-    D --> D1["+2.0 if genre matches user"]
-    D --> D2["+1.5 if mood matches user"]
-    D --> D3["+0–1.0  energy proximity\n1 − |song.energy − target|"]
-    D --> D4["+0–0.5  valence boost\nsong.valence × 0.5"]
-    D --> D5["+0–0.5  acousticness bonus\nonly if likes_acoustic = True"]
-
-    D1 & D2 & D3 & D4 & D5 --> E["Total Score for this Song\n(max 5.0)"]
-
-    E --> F["All songs scored — repeat loop complete"]
-
-    F --> G["📊 RANKING RULE\nSort all scores descending"]
-
-    G --> H["🎵 Top K Recommendations\nwith plain-language explanations"]
-```
-
-### User Profile Design
-
-The simulation's example profile:
-
-```python
-user_prefs = {
-    "genre":  "pop",   # favorite_genre
-    "mood":   "happy", # favorite_mood
-    "energy": 0.8,     # target_energy (0.0 = silent, 1.0 = maximum intensity)
-}
-```
-
-**Can this profile tell apart "intense rock" from "chill lofi"?**  
-Yes — and here is why each song type scores differently:
-
-| Song type | Genre pts | Mood pts | Energy pts (approx) | Total |
-|---|---|---|---|---|
-| Pop / happy / energy 0.82 | +2.0 | +1.5 | +0.98 | ~4.5 |
-| Rock / intense / energy 0.91 | +0.0 | +0.0 | +0.89 | ~0.9 |
-| Lofi / chill / energy 0.40 | +0.0 | +0.0 | +0.60 | ~0.6 |
-
-The genre and mood binary checks create a sharp cliff between matching and non-matching categories, so intense rock and chill lofi land in very different score ranges. The profile is **not too narrow** for this catalog — it produces clear differentiation.
-
-**Known limitation of this profile shape:** two songs with the same genre and mood but wildly different tempos (e.g., 80 BPM vs 160 BPM) receive the same categorical bonus. Tempo is available in the CSV but not yet weighted; adding a `target_tempo` field to the profile would close this gap.
-
-### Expected Biases
-
-- **Genre over-dominance**: +2.0 for genre vs +1.5 for mood means a wrong-mood song in the right genre will almost always beat a right-mood song in the wrong genre. A jazz/chill song could outrank a pop/happy song for a pop-happy user if the jazz track is slightly closer in energy.
-- **Energy proximity is symmetric**: a song 0.15 below target scores the same as one 0.15 above — the system does not distinguish between "a bit too quiet" and "a bit too loud."
-- **Catalog size bias**: with only 18 songs, if a user prefers a rare genre (like classical or reggae, each represented once), the top slots will be filled by songs from other genres with high energy proximity scores.
-- **Valence skew**: the valence bonus always favors happy-sounding songs, regardless of whether the user wants that — a moody or melancholic user profile has no way to express a preference for *lower* valence.
+1. [Origin: VibeFinder 1.0](#origin-vibefinder-10)
+2. [What This Project Does](#what-this-project-does)
+3. [Architecture Overview](#architecture-overview)
+4. [Setup Instructions](#setup-instructions)
+5. [Sample Interactions](#sample-interactions)
+6. [Design Decisions](#design-decisions)
+7. [Testing Summary](#testing-summary)
+8. [Reflection](#reflection)
 
 ---
 
-## Getting Started
+## Origin: VibeFinder 1.0
 
-### Setup
+**Original project:** [ai110-module3show-musicrecommendersimulation-starter](https://github.com/poyaotsui/ai110-module3show-musicrecommendersimulation-starter)
 
-1. Create a virtual environment (optional but recommended):
+VibeFinder 1.0 was a pure content-based recommender built during Modules 1–3. Given a user's declared genre, mood, and target energy level, it scored every song in an 18-song CSV catalog using a weighted point system (genre match +2.0, mood match +1.5, energy proximity up to +1.0) and returned the top five by rank. The system had no AI layer — every recommendation was deterministic math. Its main value was demonstrating how weighted scoring rules and edge-case testing reveal hidden biases: a 2.0 genre weight was strong enough to return a song with 0.67 energy mismatch as the top result for an adversarial "peaceful but high-energy" profile.
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate      # Mac or Linux
-   .venv\Scripts\activate         # Windows
+This project replaces the rigid profile format with natural-language input and routes all recommendations through a live Claude model — while keeping the same 18-song catalog as the RAG knowledge base.
 
-2. Install dependencies
+---
+
+## What This Project Does
+
+The AI Music Curator accepts free-form requests like *"something to study to late at night"* or *"high-energy workout songs"* and returns a curated playlist with per-song explanations. It matters because:
+
+- It shows how RAG prevents hallucination: Claude is **required** to search the catalog before naming any song.
+- It demonstrates a practical agentic loop: Claude can refine its search strategy across multiple tool calls within one conversation turn.
+- It produces auditable, logged output — every tool call and API response is written to `logs/curator.log`.
+
+```
+User (plain English)
+    ↓
+Input Guardrails       ← rejects empty / oversized input before any API call
+    ↓
+Claude (claude-sonnet-4-6)  ← reasons about what to search for
+    ↓  tool_use call
+search_music_catalog   ← filters data/songs.csv by genre, mood, energy range
+    ↓  JSON results
+Claude (may search again)   ← grounds its answer in real catalog entries
+    ↓
+Curated Playlist       ← 3–5 songs with explanations, reviewed by human
+```
+
+---
+
+## Architecture Overview
+
+![System Architecture](assets/system-architecture.png)
+
+> If the image above has not been exported yet, see [`assets/system-diagram.md`](assets/system-diagram.md) for the Mermaid source — paste it into [mermaid.live](https://mermaid.live) to render and export as PNG.
+
+The system has five layers:
+
+| Layer | Files | Role |
+|---|---|---|
+| **Input** | `src/ai_curator.py` → `validate_input()` | Sanitises and length-checks the user's request before any API call |
+| **Agentic Loop** | `src/ai_curator.py` → `MusicCuratorAgent` | Runs a Claude conversation with tool use; loops until `stop_reason == end_turn` or the 6-iteration safety cap is hit |
+| **RAG Retrieval** | `src/rag.py` → `search_catalog()` | Filters `data/songs.csv` by genre, mood, and energy range; returns ranked JSON the model uses as grounding context |
+| **Logging** | `src/logger_setup.py` | Writes every request, tool call, and API response to `logs/curator.log` |
+| **Reliability** | `tests/test_reliability.py` | 23 unit tests (offline) + 4 integration tests (live API); covers RAG logic, guardrails, and mocked agent behaviour |
+
+The rule-based simulation from Module 3 is preserved behind the `--simulate` flag so the two approaches can be compared side by side.
+
+---
+
+## Setup Instructions
+
+### Prerequisites
+
+- Python 3.10 or higher
+- An Anthropic API key ([get one here](https://console.anthropic.com/))
+
+### Steps
+
+**1. Clone the repo**
+
+```bash
+git clone https://github.com/poyaotsui/applied-ai-system-project.git
+cd applied-ai-system-project
+```
+
+**2. Create and activate a virtual environment** (recommended)
+
+```bash
+# macOS / Linux
+python -m venv .venv
+source .venv/bin/activate
+
+# Windows
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+**3. Install dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Run the app:
+**4. Add your API key**
+
+```bash
+cp .env.example .env
+# Open .env and replace "your_api_key_here" with your actual key
+```
+
+**5. Run the AI curator**
 
 ```bash
 python -m src.main
 ```
 
-### Running Tests
-
-Run the starter tests with:
+**6. (Optional) Run the rule-based simulation — no API key needed**
 
 ```bash
-pytest
+python -m src.main --simulate
 ```
 
-You can add more tests in `tests/test_recommender.py`.
+**7. Run the test suite**
+
+```bash
+# Offline unit tests only (no API key required)
+pytest tests/ -v -m "not integration"
+
+# All tests including live API calls
+pytest tests/ -v
+```
 
 ---
 
-## CLI Output
+## Sample Interactions
 
-Running `python -m src.main` with the default pop/happy/0.8 profile produces:
+### AI Curator Mode
+
+**Example 1 — Late-night study session**
 
 ```
-Loading songs from data/songs.csv...
-Loaded songs: 18
+You: something chill and low-energy to study to late at night
 
-==================================================
-  User profile
-  Genre : pop
-  Mood  : happy
-  Energy: 0.8
-==================================================
+Curator: searching catalog...
 
-Top recommendations:
+Curator:
+Here are three tracks that should keep you focused without pulling
+your attention away:
 
-  1. Sunrise City  —  Neon Echo
-     Genre: pop  |  Mood: happy  |  Energy: 0.82
-     Score : 4.90
-     Reasons: genre match (+2.0), mood match (+1.5), energy proximity (+0.98), valence boost (+0.42)
+1. **Library Rain** — Paper Lanterns
+   Lofi / chill / energy 0.35. One of the quietest tracks in the catalog,
+   with high acousticness (0.86) and a slow 72 BPM tempo. Exactly the kind
+   of background texture that stays out of the way.
 
-  2. Gym Hero  —  Max Pulse
-     Genre: pop  |  Mood: intense  |  Energy: 0.93
-     Score : 3.26
-     Reasons: genre match (+2.0), energy proximity (+0.87), valence boost (+0.39)
+2. **Midnight Coding** — LoRoom
+   Lofi / chill / energy 0.42. A slightly busier beat than Library Rain but
+   still firmly in low-energy territory. The "chill" mood tag and focused
+   production make it a strong pair with late-night work.
 
-  3. Rooftop Lights  —  Indigo Parade
-     Genre: indie pop  |  Mood: happy  |  Energy: 0.76
-     Score : 2.87
-     Reasons: mood match (+1.5), energy proximity (+0.96), valence boost (+0.41)
-
-  4. Concrete Jungle  —  Phantom Bloc
-     Genre: hip-hop  |  Mood: energetic  |  Energy: 0.85
-     Score : 1.27
-     Reasons: energy proximity (+0.95), valence boost (+0.32)
-
-  5. Night Drive Loop  —  Neon Echo
-     Genre: synthwave  |  Mood: moody  |  Energy: 0.75
-     Score : 1.19
-     Reasons: energy proximity (+0.95), valence boost (+0.24)
+3. **Focus Flow** — LoRoom
+   Lofi / focused / energy 0.40. The mood label says it all — this track is
+   specifically tagged "focused," which puts it a step ahead of general
+   chill music when concentration matters.
 ```
-
-Results match expectations: the exact genre+mood+energy match (Sunrise City) scores nearly 5.0, while the second pop track (Gym Hero) drops to 3.26 because mood is wrong. Songs 4–5 score low because they share no categorical features with the profile, relying only on energy/valence similarity.
 
 ---
 
-## Experiments You Tried
+**Example 2 — High-energy workout**
 
-### Weight-Shift Experiment — High-Energy Pop profile
+```
+You: I need something aggressive and high-energy for lifting weights
 
-Changed: genre weight 2.0 → 1.0 (halved), energy weight 1.0 → 2.0 (doubled).
+Curator: searching catalog...
 
-| Rank | Baseline | Experimental |
+Curator:
+These three tracks sit at the high-energy, intense end of the catalog:
+
+1. **Ironclad** — The Riven
+   Metal / angry / energy 0.97, tempo 180 BPM. The hardest track in the
+   catalog — if you want aggression, this is the ceiling.
+
+2. **Storm Runner** — Voltline
+   Rock / intense / energy 0.91, tempo 152 BPM. Slightly more melodic than
+   Ironclad but still built for momentum. Good if you want intensity without
+   pure metal.
+
+3. **Concrete Jungle** — Phantom Bloc
+   Hip-hop / energetic / energy 0.85, danceability 0.91. Brings a rhythmic
+   drive that pairs well with repetitive movement — different energy shape
+   than rock but equally high output.
+```
+
+---
+
+**Example 3 — Quiet Sunday morning**
+
+```
+You: peaceful acoustic music for a slow Sunday morning with coffee
+
+Curator: searching catalog...
+
+Curator:
+Here are three tracks that fit a slow, acoustic Sunday:
+
+1. **Moonlight Reimagined** — Nova Strings
+   Classical / peaceful / energy 0.20, acousticness 0.97. The quietest,
+   most acoustic track in the catalog — nearly no percussion, very high
+   emotional warmth from the valence score (0.72).
+
+2. **Coffee Shop Stories** — Slow Stereo
+   Jazz / relaxed / energy 0.37, acousticness 0.89. Low tempo (90 BPM),
+   relaxed mood, and high acousticness. Basically named for this situation.
+
+3. **Island Drift** — Coastal Roots
+   Reggae / peaceful / energy 0.48. A little more movement than the first
+   two but still peaceful in mood, with a warm valence (0.79) that suits
+   a comfortable morning.
+```
+
+---
+
+### Rule-Based Simulation Mode (`--simulate`)
+
+The original VibeFinder 1.0 algorithm, run with a Chill Lofi profile:
+
+```
+============================================================
+  Profile : Chill Lofi
+  Genre   : lofi  |  Mood: chill  |  Energy: 0.38
+============================================================
+  1. Library Rain  —  Paper Lanterns
+     Genre: lofi  |  Mood: chill  |  Energy: 0.35
+     Score  : 4.77
+     Reasons: genre match (+2.0), mood match (+1.5), energy proximity (+0.97), valence boost (+0.30)
+
+  2. Midnight Coding  —  LoRoom
+     Genre: lofi  |  Mood: chill  |  Energy: 0.42
+     Score  : 4.74
+     Reasons: genre match (+2.0), mood match (+1.5), energy proximity (+0.96), valence boost (+0.28)
+
+  3. Focus Flow  —  LoRoom
+     Genre: lofi  |  Mood: focused  |  Energy: 0.40
+     Score  : 3.27
+     Reasons: genre match (+2.0), energy proximity (+0.98), valence boost (+0.29)
+```
+
+Notice how Example 1 (AI mode) and this simulation reach the same top-3 songs via completely different paths: the simulation uses exact scoring math; the AI translates "late-night studying" into a catalog search and arrives at the same result through language understanding.
+
+---
+
+## Design Decisions
+
+### Why RAG instead of embedding all songs into the prompt?
+
+At 18 songs the catalog is small enough to fit in one prompt — but that approach does not scale and gives the model no structured way to filter. By exposing a `search_music_catalog` tool, Claude is forced to commit to specific parameters (genre, mood, energy range) before receiving results. This produces auditable queries in the log and prevents the model from mixing retrieved data with training-set knowledge. It also means the catalog can grow to thousands of songs without changing the architecture.
+
+### Why tool use instead of a chain-of-thought prompt?
+
+A chain-of-thought approach would ask Claude to reason about the catalog in its head and name songs from memory. Since Claude was not trained on this specific catalog, that would produce hallucinated titles. Tool use enforces the RAG contract: Claude **cannot** name a song it has not retrieved. If no search is called, no recommendation is written.
+
+### Why keep the Module 3 simulation?
+
+The `--simulate` flag preserves the deterministic baseline so the two systems can be directly compared. The simulation reveals what the AI curator is actually adding: the ability to understand natural language intent ("late-night focus session") rather than requiring the user to know that they want `genre=lofi, mood=chill, energy=0.38`.
+
+### Trade-offs made
+
+| Decision | Benefit | Cost |
 |---|---|---|
-| 1 | Sunrise City (pop/happy) 4.89 | Sunrise City (pop/happy) 4.86 |
-| 2 | **Gym Hero (pop/intense) 3.31** | **Rooftop Lights (indie-pop/happy) 3.73** |
-| 3 | **Rooftop Lights (indie-pop/happy) 2.82** | **Gym Hero (pop/intense) 3.23** |
-| 4 | Concrete Jungle (hip-hop) 1.32 | Concrete Jungle (hip-hop) 2.32 |
-| 5 | Storm Runner (rock) 1.18 | Storm Runner (rock) 2.12 |
-
-**What changed**: Rooftop Lights (indie pop / happy / energy 0.76) jumped from #3 to #2, displacing Gym Hero (pop / intense / energy 0.93). With a smaller genre bonus, Gym Hero's exact-genre advantage shrank, and Rooftop Lights' mood match + energy proximity overtook it. This felt *more* intuitive — a user who wants "happy pop" probably prefers a mood match over a genre match when the genre match brings the wrong mood.
-
-**Conclusion**: the original genre weight of 2.0 makes the system slightly over-commit to genre at the expense of mood, especially for users who define their taste emotionally rather than by genre label.
-
-### Profile Comparison Reflections
-
-**High-Energy Pop vs Chill Lofi**  
-These profiles produce completely non-overlapping top-3 results, which is the expected behavior. The energy gap (0.85 vs 0.38) alone would separate them, but the genre and mood gaps compound the separation — a lofi/chill song has no chance of reaching the top for the pop user, and vice versa. This confirms that when all three features (genre, mood, energy) align, the scoring system cleanly partitions the catalog.
-
-**Deep Intense Rock vs Metal/Angry**  
-Both profiles want high energy and intense emotion, but their top results diverge sharply after rank 1. The rock profile has two rock/intense songs in the catalog (Storm Runner at 4.74, then Gym Hero at 2.87 for its mood match). The metal profile has only one metal song; its ranks 2–5 are all pop/hip-hop songs that happen to be high-energy. This reveals the catalog bias: the system is only as good as the data behind it. Two emotionally similar user types get very different quality recommendations based entirely on how many songs their genre has in the catalog.
-
-**Edge: Peaceful but High-Energy (adversarial)**  
-This profile exposed the biggest flaw. The user said they like ambient music (genre) with a peaceful mood but high energy (0.95). Every peaceful song in the catalog has low energy (the two peaceful songs score 0.20 and 0.48 on energy). The genre match won anyway — Spacewalk Thoughts (ambient/chill, energy 0.28) ranked #1 with a score of 2.66 despite having energy that is 0.67 away from the user's target. The categorical bonus was powerful enough to reward an energetically incompatible song over songs that were much closer in energy. In plain language: the system heard "I like ambient music" so loudly that it stopped listening to "and I want it to feel intense."
+| Keyword-based retrieval (no vector embeddings) | Zero extra dependencies, fully reproducible | Cannot match semantic synonyms — "dark" will not find "melancholic" unless the user uses the exact catalog mood label |
+| 6-iteration safety cap on the agentic loop | Prevents runaway API spend | In theory, a very complex request could need more searches than the cap allows |
+| Input capped at 500 characters | Prevents prompt injection and runaway token costs | Users cannot paste long song descriptions |
+| No conversation history between turns | Keeps the system stateless and easy to test | Each request is independent — the curator does not remember what it recommended last |
 
 ---
 
-## Limitations and Risks
+## Testing Summary
 
-Summarize some limitations of your recommender.
+### What the tests cover
 
-Examples:
+The test suite in [`tests/test_reliability.py`](tests/test_reliability.py) has two layers:
 
-- It only works on a tiny catalog
-- It does not understand lyrics or language
-- It might over favor one genre or mood
+**Unit tests (23 tests, no API key required)**
 
-You will go deeper on this in your model card.
+| Class | What it checks |
+|---|---|
+| `TestSearchCatalog` | RAG filter logic: genre, mood, energy range, limit, unknown values, inverted ranges, sort order |
+| `TestValidateInput` | Guardrails: empty string, whitespace, over-limit length, exact-limit edge case |
+| `TestMusicCuratorAgentMocked` | Agent behaviour with a mocked API: returns a string, dispatches tool calls, rejects missing key, blocks bad input before any API call, handles unknown tool names |
+
+**Integration tests (4 tests, requires `ANTHROPIC_API_KEY`)**
+
+These call the live API and verify: non-empty response, at least one real song title appears in the output (grounding check), smoke-test consistency across two identical requests, and that the empty-input guardrail still fires before the API call.
+
+```bash
+# Run offline tests
+pytest tests/ -v -m "not integration"   # 23 passed
+
+# Run everything (needs API key)
+pytest tests/ -v                         # 27 tests
+```
+
+### What worked
+
+- The mocked agent tests were the most valuable during development: they let every code path be exercised without spending API credits and caught two bugs in the tool dispatch loop before any live call was made.
+- The RAG sort-order test (`test_results_sorted_by_energy_proximity`) caught a one-line off-by-one error in the proximity calculation that would have silently returned worse results.
+- The grounding integration test (`test_integration_mentions_real_song_title`) is the most important correctness check: it verifies the system's core promise that Claude's answers reference real catalog entries.
+
+### What didn't work / limitations
+
+- The integration consistency test is a smoke test, not a strict assertion — it checks that both responses are non-empty but not that they return the same songs. True consistency testing would require comparing structured output (song IDs), which would need the agent to return JSON instead of prose.
+- The unit tests mock the Anthropic client at the `create` method level, which means changes to how `anthropic` structures its response objects (e.g., after an SDK upgrade) could silently pass all mocks while breaking in production.
+- There is no test for the logging system itself — it is verified manually by inspecting `logs/curator.log` after a run.
 
 ---
 
 ## Reflection
 
-Read and complete `model_card.md`:
+### What this project taught me about AI
 
-[**Model Card**](model_card.md)
+The gap between VibeFinder 1.0 and this system is one key insight: **the hard part of recommendation is not the ranking, it is understanding what the user actually wants.** The rule-based system required users to know they wanted `genre=lofi, mood=chill, energy=0.38`. Almost no real user thinks that way. The AI layer does the translation work — converting "I want something to study to" into structured query parameters — and that translation is where language models add the most value over traditional algorithms.
 
-Write 1 to 2 paragraphs here about what you learned:
+The RAG architecture also clarified something about hallucination that abstract explanations do not: the problem is not that the model lies on purpose, it is that it has no reliable mechanism to distinguish "things I was trained on" from "things in this specific catalog." Making retrieval a required step — not an optional enrichment — is the only architectural fix that actually prevents the problem rather than hoping the model gets it right.
 
-- about how recommenders turn data into predictions
-- about where bias or unfairness could show up in systems like this
+### What this project taught me about problem-solving
 
+Building the test suite before running the agent against the live API forced precision about what "correct" means. The grounding test — does the response contain a real song title? — is obvious in retrospect, but writing it first required deciding what the system's core contract was. That contract (Claude must retrieve before it recommends) shaped every other decision: the system prompt, the tool definition, the iteration cap.
 
----
-
-## 7. `model_card_template.md`
-
-Combines reflection and model card framing from the Module 3 guidance. :contentReference[oaicite:2]{index=2}  
-
-```markdown
-# 🎧 Model Card - Music Recommender Simulation
-
-## 1. Model Name
-
-Give your recommender a name, for example:
-
-> VibeFinder 1.0
+The biggest trade-off I would revisit is the prose output format. Having Claude write natural-language explanations is friendly to read but makes automated quality checks fragile — you cannot easily parse "energy level suits a late-night focus session" back into a structured score. A production version of this system would have the agent return a JSON object (song IDs + rationale strings) and render the prose separately, keeping the recommendation logic testable and the presentation layer flexible.
 
 ---
 
-## 2. Intended Use
+## Project Structure
 
-- What is this system trying to do
-- Who is it for
-
-Example:
-
-> This model suggests 3 to 5 songs from a small catalog based on a user's preferred genre, mood, and energy level. It is for classroom exploration only, not for real users.
-
----
-
-## 3. How It Works (Short Explanation)
-
-Describe your scoring logic in plain language.
-
-- What features of each song does it consider
-- What information about the user does it use
-- How does it turn those into a number
-
-Try to avoid code in this section, treat it like an explanation to a non programmer.
-
----
-
-## 4. Data
-
-Describe your dataset.
-
-- How many songs are in `data/songs.csv`
-- Did you add or remove any songs
-- What kinds of genres or moods are represented
-- Whose taste does this data mostly reflect
+```
+applied-ai-system-project/
+├── data/
+│   └── songs.csv              # 18-song catalog (9 features per song)
+├── src/
+│   ├── ai_curator.py          # MusicCuratorAgent — agentic RAG loop
+│   ├── rag.py                 # search_catalog() — RAG retrieval layer
+│   ├── logger_setup.py        # Centralised logging to logs/curator.log
+│   ├── recommender.py         # VibeFinder 1.0 scoring engine (Module 3)
+│   └── main.py                # CLI entry point (AI mode + --simulate)
+├── tests/
+│   ├── test_recommender.py    # Module 3 unit tests
+│   └── test_reliability.py    # 23 unit + 4 integration tests
+├── assets/
+│   └── system-diagram.md      # Mermaid source for architecture diagram
+├── logs/                      # Runtime logs (git-ignored)
+├── model_card.md              # VibeFinder 1.0 model card
+├── pytest.ini
+├── requirements.txt
+└── .env.example
+```
 
 ---
 
-## 5. Strengths
+## Requirements
 
-Where does your recommender work well
-
-You can think about:
-- Situations where the top results "felt right"
-- Particular user profiles it served well
-- Simplicity or transparency benefits
-
----
-
-## 6. Limitations and Bias
-
-Where does your recommender struggle
-
-Some prompts:
-- Does it ignore some genres or moods
-- Does it treat all users as if they have the same taste shape
-- Is it biased toward high energy or one genre by default
-- How could this be unfair if used in a real product
-
----
-
-## 7. Evaluation
-
-How did you check your system
-
-Examples:
-- You tried multiple user profiles and wrote down whether the results matched your expectations
-- You compared your simulation to what a real app like Spotify or YouTube tends to recommend
-- You wrote tests for your scoring logic
-
-You do not need a numeric metric, but if you used one, explain what it measures.
-
----
-
-## 8. Future Work
-
-If you had more time, how would you improve this recommender
-
-Examples:
-
-- Add support for multiple users and "group vibe" recommendations
-- Balance diversity of songs instead of always picking the closest match
-- Use more features, like tempo ranges or lyric themes
-
----
-
-## 9. Personal Reflection
-
-A few sentences about what you learned:
-
-- What surprised you about how your system behaved
-- How did building this change how you think about real music recommenders
-- Where do you think human judgment still matters, even if the model seems "smart"
-
+```
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+pytest>=8.0.0
+```
