@@ -281,41 +281,94 @@ The `--simulate` flag preserves the deterministic baseline so the two systems ca
 
 ## Testing Summary
 
-### What the tests cover
+### Quick results
 
-The test suite in [`tests/test_reliability.py`](tests/test_reliability.py) has two layers:
+**25/25 unit tests passed** (offline, no API key required).  
+**8/8 batch evaluation scenarios passed** — average catalog match confidence **0.51/1.00**.  
+**4 integration tests** available when `ANTHROPIC_API_KEY` is set (verify live grounding and non-empty responses).
 
-**Unit tests (23 tests, no API key required)**
+The adversarial case (peaceful mood + energy > 0.90) correctly returned confidence **0.00**, showing the system can detect when a query contradicts itself. The unknown-genre fallback ("bossa-nova") returned confidence **0.30** — low but non-zero, correctly signalling a weak match rather than crashing.
 
-| Class | What it checks |
-|---|---|
-| `TestSearchCatalog` | RAG filter logic: genre, mood, energy range, limit, unknown values, inverted ranges, sort order |
-| `TestValidateInput` | Guardrails: empty string, whitespace, over-limit length, exact-limit edge case |
-| `TestMusicCuratorAgentMocked` | Agent behaviour with a mocked API: returns a string, dispatches tool calls, rejects missing key, blocks bad input before any API call, handles unknown tool names |
-
-**Integration tests (4 tests, requires `ANTHROPIC_API_KEY`)**
-
-These call the live API and verify: non-empty response, at least one real song title appears in the output (grounding check), smoke-test consistency across two identical requests, and that the empty-input guardrail still fires before the API call.
+### How to reproduce
 
 ```bash
-# Run offline tests
-pytest tests/ -v -m "not integration"   # 23 passed
+# Unit tests (25 tests, no API key)
+py -m pytest tests/ -v -m "not integration"
 
-# Run everything (needs API key)
-pytest tests/ -v                         # 27 tests
+# Batch reliability evaluation (8 scenarios, no API key)
+py -m tests.eval_batch
+
+# All tests including live API
+py -m pytest tests/ -v
 ```
 
-### What worked
+**Batch eval output (actual run):**
 
-- The mocked agent tests were the most valuable during development: they let every code path be exercised without spending API credits and caught two bugs in the tool dispatch loop before any live call was made.
-- The RAG sort-order test (`test_results_sorted_by_energy_proximity`) caught a one-line off-by-one error in the proximity calculation that would have silently returned worse results.
-- The grounding integration test (`test_integration_mentions_real_song_title`) is the most important correctness check: it verifies the system's core promise that Claude's answers reference real catalog entries.
+```
+====================================================================
+  RELIABILITY EVALUATION -- AI Music Curator
+  Catalog: 18 songs   |   Test cases: 8
+====================================================================
 
-### What didn't work / limitations
+  [1] PASS  Lofi study session -> top result should be lofi/chill
+       top result: "Library Rain" by Paper Lanterns | confidence: 1.00
+  --------------------------------------------------------------------
+  [2] PASS  High-energy workout -> top result energy > 0.85
+       top result: "Gym Hero" by Max Pulse | confidence: 0.60
+  --------------------------------------------------------------------
+  [3] PASS  Peaceful morning -> top result energy < 0.50
+       top result: "Moonlight Reimagined" by Nova Strings | confidence: 0.58
+  --------------------------------------------------------------------
+  [4] PASS  Metal search -> Ironclad (id=16) should appear
+       top result: "Ironclad" by The Riven | confidence: 0.56
+  --------------------------------------------------------------------
+  [5] PASS  Unknown genre 'bossa-nova' -> graceful fallback (no crash, >=1 result)
+       top result: "Dirt Road Goodbye" by Sage Hollow | confidence: 0.30
+  --------------------------------------------------------------------
+  [6] PASS  Adversarial: peaceful mood + very high energy -> low confidence expected
+       low confidence (0.00) correctly flagged for conflicting query
+  --------------------------------------------------------------------
+  [7] PASS  Guardrail: empty input -> ValueError raised
+       ValueError caught: Please describe what kind of music you're looking for.
+  --------------------------------------------------------------------
+  [8] PASS  Guardrail: input > 500 chars -> ValueError raised
+       ValueError caught: Request too long (501 chars). Keep it under 500 characters.
+  --------------------------------------------------------------------
 
-- The integration consistency test is a smoke test, not a strict assertion — it checks that both responses are non-empty but not that they return the same songs. True consistency testing would require comparing structured output (song IDs), which would need the agent to return JSON instead of prose.
-- The unit tests mock the Anthropic client at the `create` method level, which means changes to how `anthropic` structures its response objects (e.g., after an SDK upgrade) could silently pass all mocks while breaking in production.
-- There is no test for the logging system itself — it is verified manually by inspecting `logs/curator.log` after a run.
+  RESULTS: 8/8 tests passed -- all passed
+  Average catalog match confidence (RAG cases): 0.51 / 1.00
+  Reliability verdict: SYSTEM FUNCTIONAL
+```
+
+### What the confidence score means
+
+`catalog_match_quality()` in [`src/rag.py`](src/rag.py) returns a 0.0–1.0 float for every search:
+
+| Score | Meaning |
+|---|---|
+| 1.00 | Genre, mood, and energy all matched the top result perfectly |
+| 0.50–0.79 | Partial match — one or two criteria aligned |
+| 0.30–0.49 | Weak match — energy proximity only, or unknown genre fallback |
+| 0.00 | No results, or top result is energetically opposite to the query |
+
+The score is logged alongside every tool call so you can audit retrieval quality without reading full API responses.
+
+### What the tests cover
+
+| Layer | Test file | Tests | What it checks |
+|---|---|---|---|
+| RAG retrieval | `test_reliability.py` | 11 | Genre/mood/energy filters, unknown values, sort order, edge cases |
+| Input guardrails | `test_reliability.py` | 5 | Empty, whitespace, over-limit, exact-limit inputs |
+| Agent (mocked) | `test_reliability.py` | 7 | Tool dispatch, missing API key, bad input rejection, JSON output |
+| Original scorer | `test_recommender.py` | 2 | VibeFinder 1.0 ranking and explanation logic |
+| Batch eval | `eval_batch.py` | 8 | End-to-end RAG scenarios with confidence scoring |
+| Integration | `test_reliability.py` | 4 | Live API grounding, real song titles, guardrail still fires |
+
+### Known limitations
+
+- The integration consistency test checks that two identical requests both return non-empty responses, but does not assert they recommend the same songs. True determinism testing would require the agent to return structured JSON (song IDs) rather than prose.
+- Mocks target the Anthropic SDK's `messages.create` method — an SDK version bump that restructures response objects could let all mock tests pass while breaking real API calls.
+- Logging is verified manually by inspecting `logs/curator.log`; there are no assertions on log file content.
 
 ---
 
@@ -349,7 +402,8 @@ applied-ai-system-project/
 │   └── main.py                # CLI entry point (AI mode + --simulate)
 ├── tests/
 │   ├── test_recommender.py    # Module 3 unit tests
-│   └── test_reliability.py    # 23 unit + 4 integration tests
+│   ├── test_reliability.py    # 25 unit + 4 integration tests
+│   └── eval_batch.py          # 8-scenario batch evaluation with confidence scoring
 ├── assets/
 │   └── system-diagram.md      # Mermaid source for architecture diagram
 ├── logs/                      # Runtime logs (git-ignored)

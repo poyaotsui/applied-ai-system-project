@@ -72,6 +72,33 @@ def search_catalog(
     return results[:limit]
 
 
+def catalog_match_quality(
+    results: list[dict],
+    genre: str | None = None,
+    mood: str | None = None,
+    energy_min: float = 0.0,
+    energy_max: float = 1.0,
+) -> float:
+    """
+    Return a 0.0–1.0 confidence score for how well the top search result
+    satisfied the query.
+
+    Weights: genre match 40 %, mood match 30 %, energy proximity 30 %.
+    Returns 0.0 when no results were found.
+    """
+    if not results:
+        return 0.0
+    top = results[0]
+    score = 0.0
+    if genre and top["genre"].lower() == genre.lower().strip():
+        score += 0.4
+    if mood and top["mood"].lower() == mood.lower().strip():
+        score += 0.3
+    mid = (energy_min + energy_max) / 2
+    score += (1.0 - abs(top["energy"] - mid)) * 0.3
+    return round(score, 2)
+
+
 def format_for_context(songs: list[dict]) -> str:
     """Serialise a list of song dicts into a compact string for prompt context."""
     if not songs:
